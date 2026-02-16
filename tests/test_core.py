@@ -440,7 +440,9 @@ class TestMinification:
 
     def test_minify_reduces_tokens(self):
         """Minified rendering should use fewer tokens."""
-        text = "## Safety\n\nBe helpful.\n\n## Rules\n\n- Rule 1\n- Rule 2\n\n## Notes\n\nSome text."
+        text = (
+            "## Safety\n\nBe helpful.\n\n## Rules\n\n- Rule 1\n- Rule 2\n\n## Notes\n\nSome text."
+        )
         pxl_minify = PixelPrompt(RenderConfig(minify=True))
         pxl_raw = PixelPrompt(RenderConfig(minify=False))
 

@@ -387,8 +387,8 @@ class PixelPrompt:
                         wrapped.append(current_line)
                     # Handle words longer than max width
                     while len(word) > self._max_chars_per_line:
-                        wrapped.append(word[:self._max_chars_per_line])
-                        word = word[self._max_chars_per_line:]
+                        wrapped.append(word[: self._max_chars_per_line])
+                        word = word[self._max_chars_per_line :]
                     current_line = word
             if current_line:
                 wrapped.append(current_line)
@@ -399,7 +399,7 @@ class PixelPrompt:
         """Split wrapped lines into pages that fit on a single image."""
         pages = []
         for i in range(0, len(lines), self._max_lines_per_image):
-            page = lines[i:i + self._max_lines_per_image]
+            page = lines[i : i + self._max_lines_per_image]
             pages.append(page)
 
         return pages if pages else [lines]

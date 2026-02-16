@@ -128,6 +128,7 @@ class TestRenderedImage:
         assert len(base64_str) > 0
         # Should be valid base64
         import base64
+
         try:
             base64.b64decode(base64_str)
         except Exception as e:

@@ -71,4 +71,4 @@ disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src/pixelprompt --cov-report=term-line"
+addopts = "--cov=src/pixelprompt --cov-report=term-missing"

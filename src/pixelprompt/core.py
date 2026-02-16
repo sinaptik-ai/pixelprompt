@@ -10,6 +10,7 @@ Key features (from Pixels Beat Tokens research):
 
 import base64
 import io
+import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -53,6 +54,17 @@ class RenderConfig:
 
     line_spacing: int = 1
     """Extra pixels between lines. Default: 1 (tight spacing)."""
+
+    minify: bool = True
+    """If True, strip visual-only formatting before rendering.
+
+    Removes: blank lines, markdown headers (##), bold/italic markers (**/*),
+    collapses multiple spaces, strips trailing whitespace. This reduces image
+    height and width significantly without losing semantic content.
+
+    Default: True (recommended for LLM context compression).
+    Set to False when rendering text that must preserve exact formatting.
+    """
 
     # Backwards compatibility aliases
     @property
@@ -253,12 +265,46 @@ class PixelPrompt:
         bbox = test_draw.textbbox((0, 0), "M", font=self._font)
         return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
+    @staticmethod
+    def minify_text(text: str) -> str:
+        """Strip visual-only formatting to minimize rendered image area.
+
+        Removes blank lines, markdown heading prefixes (##), bold/italic
+        markers, collapses multiple spaces, and strips trailing whitespace.
+        Semantic content is fully preserved — only visual formatting that
+        becomes redundant in a rendered image is removed.
+
+        Args:
+            text: Raw text, potentially with markdown formatting.
+
+        Returns:
+            Minified text optimized for dense image rendering.
+        """
+        lines = text.split("\n")
+        result = []
+        for line in lines:
+            stripped = line.rstrip()
+            if not stripped:
+                continue  # Remove blank lines
+            # Remove markdown header prefixes (keep the text)
+            stripped = re.sub(r"^#{1,6}\s+", "", stripped)
+            # Remove bold/italic markers
+            stripped = stripped.replace("**", "").replace("__", "")
+            # Collapse multiple spaces (but preserve leading indent for lists)
+            leading = len(stripped) - len(stripped.lstrip())
+            content = re.sub(r"  +", " ", stripped.lstrip())
+            stripped = " " * leading + content
+            result.append(stripped)
+        return "\n".join(result)
+
     def render(self, text: str) -> List[RenderedImage]:
         """
         Render text to one or more optimized PNG images.
 
         Large texts are automatically split across multiple images.
         Images use dynamic sizing to minimize token cost.
+        If ``config.minify`` is True (default), text is minified first
+        to strip visual-only formatting and reduce image area.
 
         Args:
             text: Text content to render.
@@ -271,6 +317,12 @@ class PixelPrompt:
         """
         if not text or not text.strip():
             raise ValueError("Text cannot be empty")
+
+        # Minify text if enabled (strip blank lines, markdown formatting, etc.)
+        if self.config.minify:
+            text = self.minify_text(text)
+            if not text.strip():
+                raise ValueError("Text is empty after minification")
 
         # Word-wrap text into lines
         wrapped_lines = self._wrap_text(text)

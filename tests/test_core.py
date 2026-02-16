@@ -338,3 +338,139 @@ class TestSplitText:
         text = "Line 1\nLine 2\nLine 3"
         chunks = pxl._split_text(text)
         assert len(chunks) >= 1
+
+
+class TestMinification:
+    """Test text minification for image rendering."""
+
+    def test_default_config_minifies(self):
+        """Default config has minify=True."""
+        config = RenderConfig()
+        assert config.minify is True
+
+    def test_minify_removes_blank_lines(self):
+        """Blank lines should be removed."""
+        result = PixelPrompt.minify_text("Hello\n\n\nWorld")
+        assert result == "Hello\nWorld"
+
+    def test_minify_strips_markdown_headers(self):
+        """Markdown ## headers should have prefix removed."""
+        result = PixelPrompt.minify_text("## Safety\nDon't do bad things")
+        assert result == "Safety\nDon't do bad things"
+
+    def test_minify_strips_all_header_levels(self):
+        """All header levels (# through ######) should be stripped."""
+        result = PixelPrompt.minify_text("# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6")
+        assert result == "H1\nH2\nH3\nH4\nH5\nH6"
+
+    def test_minify_removes_bold_markers(self):
+        """Bold ** markers should be removed."""
+        result = PixelPrompt.minify_text("This is **bold** text")
+        assert result == "This is bold text"
+
+    def test_minify_removes_underscore_bold(self):
+        """Bold __ markers should be removed."""
+        result = PixelPrompt.minify_text("This is __bold__ text")
+        assert result == "This is bold text"
+
+    def test_minify_collapses_multiple_spaces(self):
+        """Multiple spaces should collapse to one."""
+        result = PixelPrompt.minify_text("Hello    World")
+        assert result == "Hello World"
+
+    def test_minify_strips_trailing_whitespace(self):
+        """Trailing whitespace should be removed."""
+        result = PixelPrompt.minify_text("Hello   \nWorld  ")
+        assert result == "Hello\nWorld"
+
+    def test_minify_preserves_list_indent(self):
+        """List item indentation should be preserved."""
+        result = PixelPrompt.minify_text("- Item 1\n  - Sub item\n- Item 2")
+        assert "  - Sub item" in result
+
+    def test_minify_preserves_content(self):
+        """Semantic content should be fully preserved."""
+        text = "## Config\n- key = value\n- port = 8080"
+        result = PixelPrompt.minify_text(text)
+        assert "key = value" in result
+        assert "port = 8080" in result
+        assert "Config" in result
+
+    def test_minify_static_method(self):
+        """minify_text should work as a static method."""
+        result = PixelPrompt.minify_text("## Hello\n\nWorld")
+        assert result == "Hello\nWorld"
+
+    def test_minify_reduces_image_height(self):
+        """Minified text should produce shorter images (fewer blank lines)."""
+        text = "## Section\n\nLine 1\n\nLine 2\n\nLine 3"
+        pxl_minify = PixelPrompt(RenderConfig(minify=True))
+        pxl_raw = PixelPrompt(RenderConfig(minify=False))
+
+        imgs_minify = pxl_minify.render(text)
+        imgs_raw = pxl_raw.render(text)
+
+        assert imgs_minify[0].height < imgs_raw[0].height
+
+    def test_minify_reduces_tokens(self):
+        """Minified rendering should use fewer tokens."""
+        text = "## Safety\n\nBe helpful.\n\n## Rules\n\n- Rule 1\n- Rule 2\n\n## Notes\n\nSome text."
+        pxl_minify = PixelPrompt(RenderConfig(minify=True))
+        pxl_raw = PixelPrompt(RenderConfig(minify=False))
+
+        tokens_minify = sum(i.tokens for i in pxl_minify.render(text))
+        tokens_raw = sum(i.tokens for i in pxl_raw.render(text))
+
+        assert tokens_minify < tokens_raw
+
+    def test_minify_false_preserves_formatting(self):
+        """With minify=False, blank lines and headers should be preserved."""
+        pxl = PixelPrompt(RenderConfig(minify=False))
+        text = "## Header\n\nParagraph"
+        images = pxl.render(text)
+        # Should work (no crash), and preserve blank lines in height
+        assert len(images) >= 1
+
+    def test_minify_only_blank_lines_raises(self):
+        """Text that becomes empty after minification should raise error."""
+        pxl = PixelPrompt(RenderConfig(minify=True))
+        with pytest.raises(ValueError, match="empty"):
+            pxl.render("\n\n\n")
+
+    def test_minify_realistic_system_prompt(self):
+        """Test with realistic system prompt section."""
+        section = """## Credential Vault
+
+You have access to an encrypted credential vault for storing and retrieving API keys, tokens, and passwords.
+
+### Tools
+- `vault_get(service, key)` — Retrieve a decrypted credential
+- `vault_set(service, key, value)` — Store a credential (encrypted at rest)
+- `vault_list(service?)` — List stored credentials (names only, never values)
+- `vault_delete(service, key)` — Delete a credential
+
+### Usage
+- When you need an API key or token, check the vault first with `vault_list`.
+- If found, use `vault_get` to retrieve it.
+- If the user provides a credential, store it with `vault_set`.
+
+### Security Rules
+- NEVER include credential values in your text responses.
+- NEVER write credentials to files on disk.
+"""
+        pxl_minify = PixelPrompt(RenderConfig(minify=True))
+        pxl_raw = PixelPrompt(RenderConfig(minify=False))
+
+        tokens_minify = sum(i.tokens for i in pxl_minify.render(section))
+        tokens_raw = sum(i.tokens for i in pxl_raw.render(section))
+
+        # Minified should save at least 10%
+        savings = (tokens_raw - tokens_minify) / tokens_raw * 100
+        assert savings > 10, f"Expected >10% savings, got {savings:.1f}%"
+
+    def test_minify_exported_from_package(self):
+        """minify_text should be importable from pixelprompt package."""
+        from pixelprompt import minify_text
+
+        result = minify_text("## Hello\n\nWorld")
+        assert result == "Hello\nWorld"

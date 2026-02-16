@@ -202,12 +202,6 @@ Typical compression ratios (depends on content):
 
 Rendering time: ~100-200ms per image on modern hardware.
 
-## Research
-
-Based on research by Sinaptik AI exploring multimodal LLM capabilities:
-- [Paper](https://github.com/sinaptik-ai/pixels-beat-tokens)
-- [Blog post](#) (coming soon)
-
 ## Contributing
 
 Contributions welcome! Please open issues or PRs on GitHub.
@@ -221,10 +215,10 @@ MIT License — see LICENSE file for details.
 If you use PixelPrompt in research, please cite:
 
 ```bibtex
-@software{pixelprompt2024,
+@software{pixelprompt,
   author = {Venturi, Gabriele},
   title = {PixelPrompt: Compress LLM Context by Rendering Text as Images},
-  year = {2024},
+  year = {2026},
   url = {https://github.com/sinaptik-ai/pixelprompt}
 }
 ```

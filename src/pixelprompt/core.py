@@ -269,10 +269,17 @@ class PixelPrompt:
     def minify_text(text: str) -> str:
         """Strip visual-only formatting to minimize rendered image area.
 
-        Removes blank lines, markdown heading prefixes (##), bold/italic
-        markers, collapses multiple spaces, and strips trailing whitespace.
-        Semantic content is fully preserved — only visual formatting that
-        becomes redundant in a rendered image is removed.
+        Aggressively compresses text for maximum density in rendered images:
+        1. Removes blank lines
+        2. Removes markdown heading prefixes (##)
+        3. Removes bold/italic markers (**/__)
+        4. Collapses multiple spaces
+        5. Joins consecutive non-list lines into continuous paragraphs
+
+        Line breaks are only preserved before list items (lines starting
+        with ``-`` or ``*`` followed by space) and indented content.
+        Everything else flows as continuous text — the renderer's word-wrap
+        handles line breaking at the optimal width.
 
         Args:
             text: Raw text, potentially with markdown formatting.
@@ -281,7 +288,7 @@ class PixelPrompt:
             Minified text optimized for dense image rendering.
         """
         lines = text.split("\n")
-        result = []
+        cleaned = []
         for line in lines:
             stripped = line.rstrip()
             if not stripped:
@@ -290,12 +297,28 @@ class PixelPrompt:
             stripped = re.sub(r"^#{1,6}\s+", "", stripped)
             # Remove bold/italic markers
             stripped = stripped.replace("**", "").replace("__", "")
-            # Collapse multiple spaces (but preserve leading indent for lists)
+            # Collapse multiple spaces (but preserve leading indent)
             leading = len(stripped) - len(stripped.lstrip())
             content = re.sub(r"  +", " ", stripped.lstrip())
             stripped = " " * leading + content
-            result.append(stripped)
-        return "\n".join(result)
+            cleaned.append(stripped)
+
+        # Join lines: preserve newlines only before list items and indented lines.
+        # Everything else becomes continuous text for optimal word-wrap.
+        if not cleaned:
+            return ""
+
+        result_parts = [cleaned[0]]
+        for line in cleaned[1:]:
+            # Preserve line break before list items (- or * followed by space)
+            # and indented content (preserves structure)
+            if re.match(r"^\s*[-*]\s", line) or line[0:1] == " ":
+                result_parts.append("\n" + line)
+            else:
+                # Join with space — word-wrap handles the rest
+                result_parts.append(" " + line)
+
+        return "".join(result_parts)
 
     def render(self, text: str) -> List[RenderedImage]:
         """

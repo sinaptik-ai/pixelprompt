@@ -145,7 +145,9 @@ class TestPixelPrompt:
 
     def test_render_long_text_splits(self):
         """Test that long text is split into multiple images."""
-        pxl = PixelPrompt()
+        # Use minify=False so newlines are preserved and paginate into multiple pages.
+        # With minify=True, lines get joined and may fit on a single wide image.
+        pxl = PixelPrompt(RenderConfig(minify=False))
         text = "\n".join(["Line {}".format(i) for i in range(1000)])
         images = pxl.render(text)
         assert len(images) > 1
@@ -351,17 +353,18 @@ class TestMinification:
     def test_minify_removes_blank_lines(self):
         """Blank lines should be removed."""
         result = PixelPrompt.minify_text("Hello\n\n\nWorld")
-        assert result == "Hello\nWorld"
+        # Non-list, non-indented lines are joined with space
+        assert result == "Hello World"
 
     def test_minify_strips_markdown_headers(self):
         """Markdown ## headers should have prefix removed."""
         result = PixelPrompt.minify_text("## Safety\nDon't do bad things")
-        assert result == "Safety\nDon't do bad things"
+        assert result == "Safety Don't do bad things"
 
     def test_minify_strips_all_header_levels(self):
         """All header levels (# through ######) should be stripped."""
         result = PixelPrompt.minify_text("# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6")
-        assert result == "H1\nH2\nH3\nH4\nH5\nH6"
+        assert result == "H1 H2 H3 H4 H5 H6"
 
     def test_minify_removes_bold_markers(self):
         """Bold ** markers should be removed."""
@@ -381,12 +384,24 @@ class TestMinification:
     def test_minify_strips_trailing_whitespace(self):
         """Trailing whitespace should be removed."""
         result = PixelPrompt.minify_text("Hello   \nWorld  ")
-        assert result == "Hello\nWorld"
+        # Joined into continuous text
+        assert result == "Hello World"
 
     def test_minify_preserves_list_indent(self):
         """List item indentation should be preserved."""
         result = PixelPrompt.minify_text("- Item 1\n  - Sub item\n- Item 2")
         assert "  - Sub item" in result
+
+    def test_minify_preserves_list_newlines(self):
+        """Newlines before list items should be preserved."""
+        result = PixelPrompt.minify_text("Header text\n- Item 1\n- Item 2")
+        assert "\n- Item 1" in result
+        assert "\n- Item 2" in result
+
+    def test_minify_joins_prose_lines(self):
+        """Non-list, non-indented consecutive lines should be joined."""
+        result = PixelPrompt.minify_text("First line.\nSecond line.\nThird line.")
+        assert result == "First line. Second line. Third line."
 
     def test_minify_preserves_content(self):
         """Semantic content should be fully preserved."""
@@ -399,7 +414,18 @@ class TestMinification:
     def test_minify_static_method(self):
         """minify_text should work as a static method."""
         result = PixelPrompt.minify_text("## Hello\n\nWorld")
-        assert result == "Hello\nWorld"
+        # Joined: "Hello World"
+        assert result == "Hello World"
+
+    def test_minify_mixed_prose_and_lists(self):
+        """Mix of prose and list items should be handled correctly."""
+        text = "## Section\nSome intro text.\nMore text.\n- Item 1\n- Item 2\nConclusion here."
+        result = PixelPrompt.minify_text(text)
+        # Prose joined, list items on own lines
+        assert "Section Some intro text. More text." in result
+        assert "\n- Item 1" in result
+        assert "\n- Item 2" in result
+        assert "Conclusion here." in result
 
     def test_minify_reduces_image_height(self):
         """Minified text should produce shorter images (fewer blank lines)."""
@@ -473,4 +499,4 @@ You have access to an encrypted credential vault for storing and retrieving API 
         from pixelprompt import minify_text
 
         result = minify_text("## Hello\n\nWorld")
-        assert result == "Hello\nWorld"
+        assert result == "Hello World"

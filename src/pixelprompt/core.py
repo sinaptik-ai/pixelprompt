@@ -1,13 +1,23 @@
 """
 Core PixelPrompt implementation for rendering text as optimized images.
+
+Key features (from Pixels Beat Tokens research):
+- Dynamic width/height: images sized to fit content, not fixed dimensions
+- Word wrapping: long lines wrapped to fit max width
+- Correct token estimation: uses Claude's (w*h)/750 formula
+- Menlo font preferred: optimal for Opus 4.6 accuracy at font 9
 """
 
 import base64
 import io
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
+
+# Claude vision token formula (from Anthropic docs, Feb 2026)
+TOKENS_PER_PIXEL_DIVISOR = 750
+MAX_VISION_DIMENSION = 1568
 
 
 @dataclass
@@ -15,36 +25,86 @@ class RenderConfig:
     """Configuration for text rendering to images."""
 
     font_size: int = 9
-    """Font size in points (range: 6-20). Default: 9."""
+    """Font size in points (range: 6-20). Default: 9 (optimal for Opus 4.6)."""
 
     font_family: str = "monospace"
     """Font family: 'monospace', 'serif', or 'sans-serif'. Default: 'monospace'."""
 
-    width: int = 1568
-    """Image width in pixels. Default: 1568."""
+    max_width: int = 1568
+    """Maximum image width in pixels. Default: 1568 (Claude vision max)."""
 
-    height: int = 1568
-    """Image height in pixels. Default: 1568."""
+    max_height: int = 1568
+    """Maximum image height in pixels. Default: 1568 (Claude vision max)."""
 
-    background_color: tuple[int, int, int] = (255, 255, 255)
+    dynamic_width: bool = True
+    """If True, image width fits content. If False, always uses max_width."""
+
+    dynamic_height: bool = True
+    """If True, image height fits content. If False, always uses max_height."""
+
+    background_color: Tuple[int, int, int] = (255, 255, 255)
     """Background color as (R, G, B) tuple. Default: white (255, 255, 255)."""
 
-    text_color: tuple[int, int, int] = (0, 0, 0)
+    text_color: Tuple[int, int, int] = (0, 0, 0)
     """Text color as (R, G, B) tuple. Default: black (0, 0, 0)."""
 
-    padding: int = 20
-    """Padding in pixels from image edges. Default: 20."""
+    padding: int = 5
+    """Padding in pixels from image edges. Default: 5 (minimal for density)."""
 
-    line_spacing: float = 1.2
-    """Line height multiplier. Default: 1.2."""
+    line_spacing: int = 1
+    """Extra pixels between lines. Default: 1 (tight spacing)."""
+
+    # Backwards compatibility aliases
+    @property
+    def width(self) -> int:
+        """Alias for max_width (backwards compatibility)."""
+        return self.max_width
+
+    @property
+    def height(self) -> int:
+        """Alias for max_height (backwards compatibility)."""
+        return self.max_height
+
+
+def estimate_image_tokens(width: int, height: int) -> int:
+    """Estimate Claude token cost for an image based on dimensions.
+
+    Uses official Anthropic formula: tokens = (width * height) / 750
+    Images larger than 1568px on longest side are scaled down first.
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+
+    Returns:
+        Estimated token count.
+    """
+    scale = 1.0
+    if max(width, height) > MAX_VISION_DIMENSION:
+        scale = MAX_VISION_DIMENSION / max(width, height)
+
+    scaled_w = int(width * scale)
+    scaled_h = int(height * scale)
+
+    return max(1, int((scaled_w * scaled_h) / TOKENS_PER_PIXEL_DIVISOR))
 
 
 class RenderedImage:
-    """Represents a single rendered image."""
+    """Represents a single rendered image with token cost metadata."""
 
-    def __init__(self, image: Image.Image):
-        """Initialize with PIL Image."""
+    def __init__(self, image: Image.Image, token_cost: Optional[int] = None):
+        """Initialize with PIL Image.
+
+        Args:
+            image: PIL Image object.
+            token_cost: Pre-computed token cost. If None, computed from dimensions.
+        """
         self._image = image
+        self._token_cost = (
+            token_cost
+            if token_cost is not None
+            else estimate_image_tokens(image.width, image.height)
+        )
 
     @property
     def width(self) -> int:
@@ -57,6 +117,11 @@ class RenderedImage:
         return self._image.height
 
     @property
+    def tokens(self) -> int:
+        """Estimated Claude vision token cost for this image."""
+        return self._token_cost
+
+    @property
     def size_bytes(self) -> int:
         """Approximate size in bytes (PNG-encoded)."""
         return len(self.png_bytes())
@@ -64,27 +129,48 @@ class RenderedImage:
     def png_bytes(self) -> bytes:
         """Get raw PNG bytes."""
         buffer = io.BytesIO()
-        self._image.save(buffer, format="PNG")
+        self._image.save(buffer, format="PNG", optimize=True)
         return buffer.getvalue()
 
     def base64(self) -> str:
         """Get base64-encoded PNG for API integration."""
         return base64.b64encode(self.png_bytes()).decode("utf-8")
 
+    def to_content_block(self) -> dict:
+        """Convert to Anthropic API content block format.
+
+        Returns:
+            Dict with type, source.type, source.media_type, source.data.
+        """
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": self.base64(),
+            },
+        }
+
     def save(self, path: str) -> None:
         """Save image to file."""
-        self._image.save(path, format="PNG")
+        self._image.save(path, format="PNG", optimize=True)
 
 
 class PixelPrompt:
     """
     Renders text content as optimized PNG images for LLM context compression.
 
+    Key improvements over naive text-to-image:
+    1. Dynamic width — images are only as wide as the content needs
+    2. Dynamic height — images are only as tall as the content needs
+    3. Word wrapping — long lines are wrapped to fit max_width
+    4. Correct token estimation — uses Claude's (w*h)/750 formula
+
     Example:
         >>> pxl = PixelPrompt()
         >>> images = pxl.render("Long context here...")
         >>> for img in images:
-        ...     img.save("output.png")
+        ...     print(f"{img.width}x{img.height} = {img.tokens} tokens")
     """
 
     def __init__(self, config: Optional[RenderConfig] = None):
@@ -97,6 +183,14 @@ class PixelPrompt:
         self.config = config or RenderConfig()
         self._validate_config()
         self._load_fonts()
+        self._char_width, self._char_height = self._measure_char()
+        self._line_height = self._char_height + self.config.line_spacing
+        self._max_chars_per_line = max(
+            1, (self.config.max_width - 2 * self.config.padding) // max(1, self._char_width)
+        )
+        self._max_lines_per_image = max(
+            1, (self.config.max_height - 2 * self.config.padding) // max(1, self._line_height)
+        )
 
     def _validate_config(self) -> None:
         """Validate configuration values."""
@@ -104,17 +198,17 @@ class PixelPrompt:
             raise ValueError("font_size must be between 6 and 20")
         if self.config.font_family not in ("monospace", "serif", "sans-serif"):
             raise ValueError("font_family must be 'monospace', 'serif', or 'sans-serif'")
-        if self.config.width < 256 or self.config.height < 256:
-            raise ValueError("width and height must be at least 256 pixels")
+        if self.config.max_width < 50 or self.config.max_height < 20:
+            raise ValueError("max_width must be >= 50 and max_height must be >= 20")
         if self.config.padding < 0:
             raise ValueError("padding must be non-negative")
-        if self.config.line_spacing <= 0:
-            raise ValueError("line_spacing must be positive")
+        if self.config.line_spacing < 0:
+            raise ValueError("line_spacing must be non-negative")
 
     def _load_fonts(self) -> None:
         """Load available fonts for the system."""
         font_names = {
-            "monospace": ["DejaVuSansMono", "Courier New", "Liberation Mono"],
+            "monospace": ["Menlo", "DejaVuSansMono", "Courier New", "Liberation Mono"],
             "sans-serif": ["DejaVuSans", "Arial", "Liberation Sans"],
             "serif": ["DejaVuSerif", "Times New Roman", "Liberation Serif"],
         }
@@ -122,22 +216,25 @@ class PixelPrompt:
         family_fonts = font_names.get(self.config.font_family, font_names["monospace"])
         self._font = self._find_font(family_fonts)
 
-    def _find_font(self, font_names: list[str]) -> ImageFont.FreeTypeFont:
+    def _find_font(self, font_names: List[str]) -> ImageFont.FreeTypeFont:
         """
         Find an available TrueType font from the list.
 
-        Args:
-            font_names: List of font names to try.
-
-        Returns:
-            Loaded font or default fallback.
+        Prefers Menlo (optimal per Pixels Beat Tokens research).
         """
         # Common font paths on different systems
         font_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            # macOS — Menlo preferred (per paper)
+            "/System/Library/Fonts/Menlo.ttc",
             "/System/Library/Fonts/Monaco.ttf",
-            "/Windows/Fonts/cour.ttf",
+            "/System/Library/Fonts/SFMono-Regular.otf",
+            "/System/Library/Fonts/Supplemental/Courier New.ttf",
+            # Linux
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            # Windows
+            "/Windows/Fonts/cour.ttf",
+            "/Windows/Fonts/consola.ttf",
         ]
 
         for path in font_paths:
@@ -149,17 +246,25 @@ class PixelPrompt:
         # Fallback to default font
         return ImageFont.load_default()
 
-    def render(self, text: str) -> list[RenderedImage]:
-        """
-        Render text to one or more PNG images.
+    def _measure_char(self) -> Tuple[int, int]:
+        """Measure character dimensions for the loaded monospace font."""
+        test_img = Image.new("RGB", (200, 200))
+        test_draw = ImageDraw.Draw(test_img)
+        bbox = test_draw.textbbox((0, 0), "M", font=self._font)
+        return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-        Large texts are automatically split across multiple images if needed.
+    def render(self, text: str) -> List[RenderedImage]:
+        """
+        Render text to one or more optimized PNG images.
+
+        Large texts are automatically split across multiple images.
+        Images use dynamic sizing to minimize token cost.
 
         Args:
             text: Text content to render.
 
         Returns:
-            List of RenderedImage objects.
+            List of RenderedImage objects with token cost metadata.
 
         Raises:
             ValueError: If text is empty.
@@ -167,82 +272,119 @@ class PixelPrompt:
         if not text or not text.strip():
             raise ValueError("Text cannot be empty")
 
-        # Split text into chunks if needed
-        chunks = self._split_text(text)
+        # Word-wrap text into lines
+        wrapped_lines = self._wrap_text(text)
 
-        # Render each chunk to an image
-        images = [self._render_chunk(chunk) for chunk in chunks]
+        # Paginate into groups that fit one image each
+        pages = self._paginate(wrapped_lines)
+
+        # Render each page with dynamic sizing
+        images = [self._render_page(page) for page in pages]
 
         return images
 
-    def _split_text(self, text: str) -> list[str]:
+    def _wrap_text(self, text: str) -> List[str]:
+        """
+        Word-wrap text to fit within max_width.
+
+        Returns a flat list of lines.
+        """
+        wrapped = []
+        for paragraph in text.split("\n"):
+            if not paragraph:
+                wrapped.append("")
+                continue
+
+            # Check if line fits as-is
+            if len(paragraph) <= self._max_chars_per_line:
+                wrapped.append(paragraph)
+                continue
+
+            # Word-wrap long lines
+            words = paragraph.split(" ")
+            current_line = ""
+            for word in words:
+                test_line = "{} {}".format(current_line, word).strip() if current_line else word
+                if len(test_line) <= self._max_chars_per_line:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        wrapped.append(current_line)
+                    # Handle words longer than max width
+                    while len(word) > self._max_chars_per_line:
+                        wrapped.append(word[:self._max_chars_per_line])
+                        word = word[self._max_chars_per_line:]
+                    current_line = word
+            if current_line:
+                wrapped.append(current_line)
+
+        return wrapped
+
+    def _paginate(self, lines: List[str]) -> List[List[str]]:
+        """Split wrapped lines into pages that fit on a single image."""
+        pages = []
+        for i in range(0, len(lines), self._max_lines_per_image):
+            page = lines[i:i + self._max_lines_per_image]
+            pages.append(page)
+
+        return pages if pages else [lines]
+
+    def _render_page(self, lines: List[str]) -> RenderedImage:
+        """
+        Render a page of lines with dynamic dimensions.
+
+        Width and height are fitted to content when dynamic_width/height
+        are enabled, minimizing token cost.
+        """
+        # Calculate dimensions
+        if self.config.dynamic_width:
+            longest_line = max((len(line) for line in lines), default=0)
+            content_width = longest_line * self._char_width + 2 * self.config.padding
+            img_width = min(self.config.max_width, max(content_width, 50))
+        else:
+            img_width = self.config.max_width
+
+        if self.config.dynamic_height:
+            content_height = len(lines) * self._line_height + 2 * self.config.padding
+            img_height = min(self.config.max_height, max(content_height, 20))
+        else:
+            img_height = self.config.max_height
+
+        # Create image
+        image = Image.new("RGB", (img_width, img_height), self.config.background_color)
+        draw = ImageDraw.Draw(image)
+
+        # Draw text
+        y = self.config.padding
+        for line in lines:
+            draw.text(
+                (self.config.padding, y),
+                line,
+                fill=self.config.text_color,
+                font=self._font,
+            )
+            y += self._line_height
+
+        token_cost = estimate_image_tokens(img_width, img_height)
+        return RenderedImage(image, token_cost=token_cost)
+
+    # ── Backwards compatibility ──────────────────────────────────────────
+
+    def _split_text(self, text: str) -> List[str]:
         """
         Split text into chunks that fit on a single image.
 
-        Args:
-            text: Text to split.
-
-        Returns:
-            List of text chunks.
+        Deprecated: use render() directly. Kept for backwards compatibility.
         """
-        # Calculate how many lines fit on one image
-        available_height = self.config.height - 2 * self.config.padding
-        line_height = int(self.config.font_size * self.config.line_spacing)
-
-        if line_height == 0:
-            line_height = self.config.font_size
-
-        max_lines = max(1, available_height // line_height)
-
-        # Split text into lines
-        lines = text.split("\n")
-
-        # Group lines into chunks
-        chunks = []
-        current_chunk = []
-
-        for line in lines:
-            current_chunk.append(line)
-            if len(current_chunk) >= max_lines:
-                chunks.append("\n".join(current_chunk))
-                current_chunk = []
-
-        if current_chunk:
-            chunks.append("\n".join(current_chunk))
-
-        return chunks if chunks else [text]
+        wrapped = self._wrap_text(text)
+        pages = self._paginate(wrapped)
+        return ["\n".join(page) for page in pages]
 
     def _render_chunk(self, text: str) -> RenderedImage:
         """
         Render a single text chunk to an image.
 
-        Args:
-            text: Text to render.
-
-        Returns:
-            RenderedImage object.
+        Deprecated: use render() directly. Kept for backwards compatibility.
         """
-        # Create image with background color
-        image = Image.new(
-            "RGB",
-            (self.config.width, self.config.height),
-            self.config.background_color,
-        )
-
-        draw = ImageDraw.Draw(image)
-
-        # Draw text
-        x = self.config.padding
-        y = self.config.padding
-        line_height = int(self.config.font_size * self.config.line_spacing)
-
-        for line in text.split("\n"):
-            draw.text(
-                (x, y),
-                line,
-                fill=self.config.text_color,
-                font=self._font,
-            )
-            y += line_height
-
-        return RenderedImage(image)
+        lines = text.split("\n")
+        return self._render_page(lines)

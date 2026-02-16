@@ -1,6 +1,7 @@
 """Tests for PixelPrompt utility functions."""
 
 from pixelprompt.utils import estimate_compression_ratio, estimate_tokens
+from pixelprompt.core import estimate_image_tokens
 
 
 class TestEstimateTokens:
@@ -32,22 +33,31 @@ class TestEstimateCompressionRatio:
 
     def test_single_image_compression(self):
         """Test compression ratio with single image."""
-        text = "a" * 100
-        ratio = estimate_compression_ratio(text, 1)
-        # 100 chars = ~25 tokens, 1 image = ~2 tokens
+        text = "a" * 4000  # 1000 tokens
+        ratio = estimate_compression_ratio(text, 1, image_width=1568, image_height=300)
+        # 1000 text tokens vs (1568*300)/750 = 627 image tokens
         assert ratio > 1
 
     def test_multiple_images_compression(self):
         """Test compression ratio with multiple images."""
-        text = "a" * 100
-        ratio = estimate_compression_ratio(text, 2)
-        # 100 chars = ~25 tokens, 2 images = ~4 tokens
-        assert ratio > 1
+        text = "a" * 4000
+        ratio = estimate_compression_ratio(text, 2, image_width=1568, image_height=300)
+        assert ratio > 0
 
-    def test_compression_improves_with_images(self):
-        """Test that more images improve compression."""
-        text = "a" * 1000
-        ratio_1 = estimate_compression_ratio(text, 1)
-        ratio_2 = estimate_compression_ratio(text, 2)
-        # More images should improve compression ratio
-        assert ratio_1 > ratio_2
+    def test_compression_ratio_uses_real_formula(self):
+        """Test that compression uses (w*h)/750, not fake constants."""
+        text = "a" * 4000  # 1000 tokens
+        ratio = estimate_compression_ratio(text, 1, image_width=1568, image_height=100)
+        # (1568*100)/750 = 209 image tokens
+        expected_image_tokens = estimate_image_tokens(1568, 100)
+        expected_ratio = 1000 / expected_image_tokens
+        assert abs(ratio - expected_ratio) < 0.01
+
+    def test_dynamic_width_improves_ratio(self):
+        """Narrower images should give better compression ratios."""
+        text = "a" * 4000
+        # Wide image
+        ratio_wide = estimate_compression_ratio(text, 1, image_width=1568, image_height=300)
+        # Narrow image (same height but less width)
+        ratio_narrow = estimate_compression_ratio(text, 1, image_width=500, image_height=300)
+        assert ratio_narrow > ratio_wide

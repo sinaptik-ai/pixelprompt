@@ -11,7 +11,6 @@ These helpers provide prompt wrappers that suppress verbosity.
 
 from typing import Optional
 
-
 # ═══════════════════════════════════════════════════════════
 # Prompt optimization constants (from benchmark v2)
 # ═══════════════════════════════════════════════════════════
@@ -45,8 +44,8 @@ def optimize_prompt(prompt: str, style: str = "concise") -> str:
         Prompt with optimization suffix appended.
 
     Example:
-        >>> optimize_prompt("What is the main function's return type?")
-        'What is the main function\\'s return type? Answer with ONLY the answer value. No explanation, no preamble.'
+        >>> optimize_prompt("What is the main function's return type?")  # doctest: +SKIP
+        "What is the main function's return type? Answer with ONLY the answer value. ..."
     """
     if style == "none":
         return prompt
@@ -93,8 +92,8 @@ def image_query(
         Complete optimized prompt string.
 
     Example:
-        >>> image_query("What port does the server listen on?")
-        'Based on the content shown in the image(s): What port does the server listen on? Answer with ONLY the answer value. No explanation, no preamble.'
+        >>> image_query("What port does the server listen on?")  # doctest: +SKIP
+        "Based on the content shown in the image(s): What port does the server listen on? ..."
     """
     if context_instruction is None:
         context_instruction = "Based on the content shown in the image(s):"

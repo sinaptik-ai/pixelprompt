@@ -15,7 +15,7 @@ import base64
 import io
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont

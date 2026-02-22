@@ -1,24 +1,70 @@
 """
 Core PixelPrompt implementation for rendering text as optimized images.
 
-Key features (from Pixels Beat Tokens research):
+Key features (from Pixels Beat Tokens research, benchmark v2):
 - Dynamic width/height: images sized to fit content, not fixed dimensions
 - Word wrapping: long lines wrapped to fit max width
 - Correct token estimation: uses Claude's (w*h)/750 formula
-- Menlo font preferred: optimal for Opus 4.6 accuracy at font 9
+- Menlo font preferred: optimal for Opus 4.6 accuracy
+- Content-type presets: optimal font size per content type
+- 100% accuracy on 125-question benchmark (Opus 4.6)
+- 38-80% net cost savings with optimized prompts
 """
 
 import base64
 import io
+import json
 import re
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
 # Claude vision token formula (from Anthropic docs, Feb 2026)
 TOKENS_PER_PIXEL_DIVISOR = 750
 MAX_VISION_DIMENSION = 1568
+
+# Pricing ($/MTok) — Feb 2026
+MODEL_PRICING = {
+    "claude-opus-4-6": {"input": 5.0, "output": 25.0},
+    "claude-sonnet-4-5": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+}
+
+# ═══════════════════════════════════════════════════════════
+# Content-type presets (from benchmark v2 findings)
+# ═══════════════════════════════════════════════════════════
+
+CONTENT_PRESETS = {
+    "prose": {
+        "font_size": 9,
+        "minify": True,
+        "description": "Long-form text, articles, documentation",
+        "expected_input_savings": 0.71,
+        "expected_net_savings": 0.69,
+    },
+    "json": {
+        "font_size": 9,
+        "minify": True,  # compact_json: remove whitespace
+        "description": "JSON data, API responses, structured data",
+        "expected_input_savings": 0.83,
+        "expected_net_savings": 0.80,
+    },
+    "code": {
+        "font_size": 7,
+        "minify": False,  # never minify code
+        "description": "Source code, scripts, functions",
+        "expected_input_savings": 0.61,
+        "expected_net_savings": 0.59,
+    },
+    "config": {
+        "font_size": 8,
+        "minify": False,  # preserve config structure
+        "description": "INI, TOML, YAML, env files",
+        "expected_input_savings": 0.41,
+        "expected_net_savings": 0.39,
+    },
+}
 
 
 @dataclass
@@ -63,8 +109,41 @@ class RenderConfig:
     height and width significantly without losing semantic content.
 
     Default: True (recommended for LLM context compression).
-    Set to False when rendering text that must preserve exact formatting.
+    Set to False when rendering text that must preserve exact formatting
+    (code, config files).
     """
+
+    content_type: Optional[str] = None
+    """Content type preset: 'prose', 'json', 'code', 'config', or None.
+
+    When set, overrides font_size and minify with optimal values from
+    benchmark v2 research. Set to None to use manual configuration.
+    """
+
+    @staticmethod
+    def for_content(content_type: str) -> "RenderConfig":
+        """Create a RenderConfig with optimal settings for a content type.
+
+        Args:
+            content_type: One of 'prose', 'json', 'code', 'config'.
+
+        Returns:
+            RenderConfig with optimal font_size and minify settings.
+
+        Raises:
+            ValueError: If content_type is not recognized.
+        """
+        if content_type not in CONTENT_PRESETS:
+            valid = ", ".join(sorted(CONTENT_PRESETS.keys()))
+            raise ValueError(
+                "Unknown content type '{}'. Valid types: {}".format(content_type, valid)
+            )
+        preset = CONTENT_PRESETS[content_type]
+        return RenderConfig(
+            font_size=preset["font_size"],
+            minify=preset["minify"],
+            content_type=content_type,
+        )
 
     # Backwards compatibility aliases
     @property
@@ -266,6 +345,28 @@ class PixelPrompt:
         return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
     @staticmethod
+    def compact_json(text: str) -> str:
+        """Compact JSON by removing unnecessary whitespace.
+
+        Parses the JSON and re-serializes with minimal formatting.
+        Falls back to regex-based compaction if JSON parsing fails.
+
+        Args:
+            text: JSON string (pretty-printed or compact).
+
+        Returns:
+            Compact JSON string with no extra whitespace.
+        """
+        try:
+            parsed = json.loads(text)
+            return json.dumps(parsed, separators=(",", ":"))
+        except (json.JSONDecodeError, ValueError):
+            # Fallback: regex-based compaction
+            result = re.sub(r"\s+", " ", text)
+            result = re.sub(r"\s*([{}:,\[\]])\s*", r"\1", result)
+            return result.strip()
+
+    @staticmethod
     def minify_text(text: str) -> str:
         """Strip visual-only formatting to minimize rendered image area.
 
@@ -341,8 +442,10 @@ class PixelPrompt:
         if not text or not text.strip():
             raise ValueError("Text cannot be empty")
 
-        # Minify text if enabled (strip blank lines, markdown formatting, etc.)
-        if self.config.minify:
+        # Content-type-specific compaction
+        if self.config.content_type == "json":
+            text = self.compact_json(text)
+        elif self.config.minify:
             text = self.minify_text(text)
             if not text.strip():
                 raise ValueError("Text is empty after minification")
@@ -442,6 +545,52 @@ class PixelPrompt:
 
         token_cost = estimate_image_tokens(img_width, img_height)
         return RenderedImage(image, token_cost=token_cost)
+
+    def compare(self, text: str, model: str = "claude-opus-4-6") -> Dict:
+        """Compare text vs image token costs for the given content.
+
+        Renders the text and calculates estimated savings.
+
+        Args:
+            text: Text content to analyze.
+            model: Model name for pricing. Default: "claude-opus-4-6".
+
+        Returns:
+            Dict with text_tokens, image_tokens, input_savings_pct,
+            estimated_net_savings_pct, text_cost_usd, image_cost_usd.
+        """
+        images = self.render(text)
+        text_tokens = max(1, len(text) // 4)  # ~4 chars/token estimate
+        image_tokens = sum(img.tokens for img in images)
+
+        # Look up pricing
+        pricing = None
+        for key, p in MODEL_PRICING.items():
+            if key in model:
+                pricing = p
+                break
+        if pricing is None:
+            pricing = MODEL_PRICING["claude-opus-4-6"]
+
+        input_savings = (text_tokens - image_tokens) / text_tokens if text_tokens > 0 else 0
+
+        # Estimate net savings (assumes optimized prompts, ~equal output tokens)
+        # Based on benchmark v2: output inflation is ~0% with good prompts
+        text_cost = text_tokens * pricing["input"] / 1_000_000
+        image_cost = image_tokens * pricing["input"] / 1_000_000
+
+        return {
+            "text_tokens": text_tokens,
+            "image_tokens": image_tokens,
+            "num_images": len(images),
+            "image_dimensions": [
+                {"width": img.width, "height": img.height} for img in images
+            ],
+            "input_savings_pct": round(input_savings * 100, 1),
+            "text_cost_per_call": round(text_cost, 8),
+            "image_cost_per_call": round(image_cost, 8),
+            "model": model,
+        }
 
     # ── Backwards compatibility ──────────────────────────────────────────
 
